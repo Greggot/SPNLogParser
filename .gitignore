@@ -1,0 +1,7 @@
+# Files
+*.cfg
+
+# Directories
+config
+.vscode
+build
