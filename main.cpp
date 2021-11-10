@@ -38,7 +38,9 @@ int main(int argc, char* argv[])
         if (isIncluded(argv[i], HELP_FLAG, sizeof(HELP_FLAG) - 1) ||
             isIncluded(argv[i], H_FLAG, sizeof(H_FLAG) - 1))
         {
-            printf("Help\n");
+            printf("Flags\n\t%s<path to format cfg file>\n\t%s<path to SPN settings cfg file>\n\t%s<path to text file with data from CAN bus>\n",
+                LOG_FORMAT_FLAG, SPN_FORMAT_FLAG, LOG_FLAG);
+            return 0;
         }
     }
 
