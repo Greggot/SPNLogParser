@@ -7,6 +7,7 @@
 
 #include <fstream>
 #include <cstddef>
+#include <string>
 
 #define SHOW_PROGRESS
 
@@ -20,19 +21,27 @@
 #define HELP_FLAG "-help"
 #define H_FLAG "-h"
 
-bool isIncluded(const char* one, const char* two, size_t size);
-typedef void (*StringElementCallback) (uint8_t, const char*, std::ptrdiff_t);
+typedef void (*StringElementCallback) (const char*, std::ptrdiff_t);
 
+bool isIncluded(const char* one, const char* two, size_t size);
 #ifdef SHOW_PROGRESS
 void ConsoleThread(uint32_t& StringCounter, uint32_t& StringAmount);
 #endif // SHOW_PROGRESS
 
+void IDcallback(const char* ID, std::ptrdiff_t IDstringSize);
+void DLCcallback(const char* DLC, std::ptrdiff_t IDstringSize);
+void DataCallback(const char* Data, std::ptrdiff_t DataStringSize);
+
+static std::map<uint32_t, std::vector<SPN>*> SPNs;
+static logFormat Format;
+static std::ifstream Log;
+
+static std::vector<std::pair<uint32_t, uint64_t>> CANrawDataVec;
+std::pair<uint32_t, uint64_t> CANrawData;
+uint8_t currentDLC;
 
 int main(int argc, char* argv[])
 {
-    std::map<uint32_t, std::vector<SPN>*> SPNs;
-    logFormat Format;
-
     for (int i = 0; i < argc; i++)
     {
         if (isIncluded(argv[i], HELP_FLAG, sizeof(HELP_FLAG) - 1) ||
@@ -43,8 +52,6 @@ int main(int argc, char* argv[])
             return 0;
         }
     }
-
-    std::ifstream Log;
 
     for (int i = 0; i < argc; i++)
     {
@@ -58,26 +65,31 @@ int main(int argc, char* argv[])
             Log.open(argv[i] + sizeof(SPN_FORMAT_FLAG) - 1);
     }
 
+    StringElementCallback* Callbacks = new StringElementCallback[0xFF]{nullptr};
+    Callbacks[Format.ID] = IDcallback;
+    Callbacks[Format.DLC] = DLCcallback;
+    Callbacks[Format.Data] = DataCallback;
+    
     char* buffer = new char[0xFF];
     char* bufferBeginning = buffer;
-
     char* prevPtr = buffer;
 
-    uint32_t StringCounter = 1;
-    uint8_t currentElement = 0;
+    volatile uint8_t currentElement = 0;
 
+    uint32_t StringCounter = 1;
     uint32_t StringAmount = 0;
 
     while (Log.getline(bufferBeginning, 0xFF, '\n'))
     {
         StringAmount++;
     }
-    Log.clear();
-    Log.seekg(std::ios_base::_Seekbeg);
 
 #ifdef SHOW_PROGRESS
     std::thread ConsoleProgressThread(ConsoleThread, std::ref(StringCounter), std::ref(StringAmount));
 #endif // SHOW_PROGRESS
+    Log.clear();
+    Log.seekg(std::ios_base::_Seekbeg);
+
 
     while (Log.getline(bufferBeginning, 0xFF, '\n'))
     {
@@ -90,6 +102,8 @@ int main(int argc, char* argv[])
             {
                 while (*prevPtr == (char)Format.Divider && *prevPtr)
                     prevPtr++;
+                if (Callbacks[currentElement])
+                    Callbacks[currentElement](prevPtr, buffer - prevPtr);
 
                 prevPtr = buffer;
                 currentElement++;
@@ -99,6 +113,7 @@ int main(int argc, char* argv[])
         }
         buffer = bufferBeginning;
     }
+
 #ifdef SHOW_PROGRESS
     ConsoleProgressThread.join();
 #endif // SHOW_PROGRESS
@@ -123,15 +138,57 @@ void ConsoleThread(uint32_t& StringCounter, uint32_t& StringAmount)
     {
         percent = 100 * StringCounter / StringAmount;
         printf("%d percent done: ", percent);
-        for (uint8_t i = 0; i < percent; i += 2)
+        for (uint8_t i = 0; i < percent; i += 4)
             printf("%c", LOADING_READY);
-        for (uint8_t i = percent; i < 100; i += 2)
+        for (uint8_t i = percent; i < 100; i += 4)
             printf("%c", LOADING_EMPTY);
         printf("\r");
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
     }
     printf("\n");
     printf("%d strings has been parsed\n", StringCounter);
 }
 #endif
+
+void IDcallback(const char* ID, std::ptrdiff_t IDstringSize)
+{
+    if(std::isalpha(*ID))
+        return;
+    CANrawData.first = std::stoi(ID, nullptr, 16);
+}
+
+void DLCcallback(const char* DLC, std::ptrdiff_t IDstringSize)
+{
+    if (std::isalpha(*DLC))
+    {
+        currentDLC = 0;
+        return;
+    }
+    currentDLC = *DLC - '0';
+}
+
+static char SymbArray[16];
+static char* SymbPtr;
+void DataCallback(const char* Data, std::ptrdiff_t DataStringSize)
+{
+    SymbPtr = SymbArray;
+    if (!currentDLC)
+        return;
+    while (currentDLC)
+    {
+        if (*Data == Format.Divider)
+            currentDLC--;
+        while (*Data == Format.Divider)
+            Data++;
+        *SymbPtr++ = *Data++;
+    }
+    try
+    {
+        CANrawData.second = std::stoull(SymbArray, nullptr, 16);
+    }
+    catch (std::out_of_range)
+    {
+        CANrawData.second = 0;
+    }
+}
