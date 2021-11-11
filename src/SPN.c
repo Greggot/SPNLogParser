@@ -5,7 +5,7 @@
 float getValue(SPN spn, uint64_t rawData)
 {
     #ifdef LITTLE_ENDIAN
-        float Data = (float)((rawData << (64 - spn.Position - spn.Length)) >> (64 - spn.Length));
+        float Data = (rawData << (64 - spn.Position - spn.Length)) >> (64 - spn.Length);
     #else
         float Data = (float)((rawData << spn.Position) >> (64 - spn.Length));
     #endif
