@@ -1,3 +1,4 @@
+#pragma warning(disable : 4996)
 #include <SPN.h>
 #include <ReadSPN.hpp>
 #include <ReadLogFormat.h>
@@ -8,6 +9,9 @@
 #include <fstream>
 #include <cstddef>
 #include <string>
+#include <list>
+
+#include <cstdio>
 
 #define SHOW_PROGRESS
 
@@ -17,31 +21,39 @@
 #define LOG_FORMAT_FLAG "-F"
 #define SPN_FORMAT_FLAG "-S"
 #define LOG_FLAG "-L"
+#define LEADING_ID "-I"
 
 #define HELP_FLAG "-help"
 #define H_FLAG "-h"
 
-typedef void (*StringElementCallback) (const char*, std::ptrdiff_t);
+typedef void (__fastcall *StringElementCallback) (char**, uint8_t&);
 
 bool isIncluded(const char* one, const char* two, size_t size);
 #ifdef SHOW_PROGRESS
 void ConsoleThread(uint32_t& StringCounter, uint32_t& StringAmount);
 #endif // SHOW_PROGRESS
 
-void IDcallback(const char* ID, std::ptrdiff_t IDstringSize);
-void DLCcallback(const char* DLC, std::ptrdiff_t IDstringSize);
-void DataCallback(const char* Data, std::ptrdiff_t DataStringSize);
+void __fastcall IDcallback(char** ID, uint8_t& pos);
+void __fastcall DLCcallback(char** DLC, uint8_t& pos);
+void __fastcall DataCallback(char** Data, uint8_t& pos);
 
 static std::map<uint32_t, std::vector<SPN>*> SPNs;
 static logFormat Format;
 static std::ifstream Log;
+static FILE* Output;
 
-static std::vector<std::pair<uint32_t, uint64_t>> CANrawDataVec;
-std::pair<uint32_t, uint64_t> CANrawData;
+static std::list<std::pair<uint32_t, float>> CANrawDataVec;
+static uint32_t currentID;
 uint8_t currentDLC;
 
+uint32_t LeadingID;
+std::map<char*, float> CalculatedData;
+
+uint32_t StringCounter = 1;
+uint32_t StringAmount = 0;
 int main(int argc, char* argv[])
 {
+    Output = fopen("Log.txt", "a");
     for (int i = 0; i < argc; i++)
     {
         if (isIncluded(argv[i], HELP_FLAG, sizeof(HELP_FLAG) - 1) ||
@@ -49,6 +61,7 @@ int main(int argc, char* argv[])
         {
             printf("Flags\n\t%s<path to format cfg file>\n\t%s<path to SPN settings cfg file>\n\t%s<path to text file with data from CAN bus>\n",
                 LOG_FORMAT_FLAG, SPN_FORMAT_FLAG, LOG_FLAG);
+            printf("\nUse %s<HEX ID> to specify syncronization value\n", LEADING_ID);
             return 0;
         }
     }
@@ -63,8 +76,17 @@ int main(int argc, char* argv[])
 
         if (isIncluded(argv[i], LOG_FLAG, sizeof(SPN_FORMAT_FLAG) - 1))
             Log.open(argv[i] + sizeof(SPN_FORMAT_FLAG) - 1);
-    }
 
+        if (isIncluded(argv[i], LEADING_ID, sizeof(LEADING_ID) - 1))
+            LeadingID = std::stoi(argv[i] + sizeof(LEADING_ID) - 1, nullptr, 16);
+    }
+    for (auto spn : SPNs)
+    {
+        for (auto vec : *SPNs[spn.first])
+        {
+            CalculatedData.insert({ vec.Name, 0 });
+        }
+    }
     StringElementCallback* Callbacks = new StringElementCallback[0xFF]{nullptr};
     Callbacks[Format.ID] = IDcallback;
     Callbacks[Format.DLC] = DLCcallback;
@@ -74,10 +96,7 @@ int main(int argc, char* argv[])
     char* bufferBeginning = buffer;
     char* prevPtr = buffer;
 
-    volatile uint8_t currentElement = 0;
-
-    uint32_t StringCounter = 1;
-    uint32_t StringAmount = 0;
+    uint8_t currentElement = 0;
 
     while (Log.getline(bufferBeginning, 0xFF, '\n'))
     {
@@ -87,9 +106,12 @@ int main(int argc, char* argv[])
 #ifdef SHOW_PROGRESS
     std::thread ConsoleProgressThread(ConsoleThread, std::ref(StringCounter), std::ref(StringAmount));
 #endif // SHOW_PROGRESS
-    Log.clear();
+
+    Log.clear(); 
     Log.seekg(std::ios_base::_Seekbeg);
 
+    clock_t start, stop;
+    start = clock();
 
     while (Log.getline(bufferBeginning, 0xFF, '\n'))
     {
@@ -100,13 +122,11 @@ int main(int argc, char* argv[])
         {
             if (*buffer == (char)Format.Divider)
             {
-                while (*prevPtr == (char)Format.Divider && *prevPtr)
-                    prevPtr++;
-                if (Callbacks[currentElement])
-                    Callbacks[currentElement](prevPtr, buffer - prevPtr);
-
-                prevPtr = buffer;
                 currentElement++;
+                while (*buffer == (char)Format.Divider && *buffer)
+                    buffer++;
+                if (Callbacks[currentElement])
+                    Callbacks[currentElement](&buffer, currentElement);
             }
             while (*buffer == (char)Format.Divider && *buffer)
                 buffer++;
@@ -117,6 +137,10 @@ int main(int argc, char* argv[])
 #ifdef SHOW_PROGRESS
     ConsoleProgressThread.join();
 #endif // SHOW_PROGRESS
+    fclose(Output);
+
+    stop = clock();
+    printf("Time - %ldms\n", stop - start);
 
 }
 
@@ -151,44 +175,53 @@ void ConsoleThread(uint32_t& StringCounter, uint32_t& StringAmount)
 }
 #endif
 
-void IDcallback(const char* ID, std::ptrdiff_t IDstringSize)
+static size_t IDlen;
+void __fastcall IDcallback(char** ID, uint8_t& pos)
 {
-    if(std::isalpha(*ID))
+    if(std::isalpha(**ID))
         return;
-    CANrawData.first = std::stoi(ID, nullptr, 16);
+    currentID = std::stoi(*ID, &IDlen, 16);
+    
+    *ID += --IDlen;
+
+    if (SPNs.find(currentID) == SPNs.end())
+        **ID = 0;
 }
 
-void DLCcallback(const char* DLC, std::ptrdiff_t IDstringSize)
+void __fastcall DLCcallback(char** DLC, uint8_t& pos)
 {
-    if (std::isalpha(*DLC))
+    if (std::isalpha(**DLC))
     {
         currentDLC = 0;
         return;
     }
-    currentDLC = *DLC - '0';
+    currentDLC = **DLC - '0';
 }
 
-static char SymbArray[16];
+static char SymbArray[16]{0};
 static char* SymbPtr;
-void DataCallback(const char* Data, std::ptrdiff_t DataStringSize)
+static char OutputFileData[200];
+void __fastcall DataCallback(char** Data, uint8_t& pos)
 {
     SymbPtr = SymbArray;
     if (!currentDLC)
         return;
     while (currentDLC)
     {
-        if (*Data == Format.Divider)
+        if (**Data == Format.Divider)
             currentDLC--;
-        while (*Data == Format.Divider)
-            Data++;
-        *SymbPtr++ = *Data++;
+        while (**Data == Format.Divider)
+            (*Data)++;
+        *SymbPtr++ = *(*Data)++;
     }
-    try
+
+    for (auto spn : *SPNs[currentID])
+        CalculatedData[spn.Name] = getValue(spn, strtoll(SymbArray, nullptr, 16));
+
+    if (currentID == LeadingID)
     {
-        CANrawData.second = std::stoull(SymbArray, nullptr, 16);
-    }
-    catch (std::out_of_range)
-    {
-        CANrawData.second = 0;
+        for (auto val : CalculatedData)
+            fprintf(Output, "%.3f\t", val.second);
+        fprintf(Output, "\n");
     }
 }
