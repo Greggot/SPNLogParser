@@ -5,6 +5,8 @@
 
 #include <thread>
 #include <chrono>
+#include <mutex>
+#include <condition_variable>
 
 #include <fstream>
 #include <cstddef>
@@ -32,6 +34,7 @@ bool isIncluded(const char* one, const char* two, size_t size);
 #ifdef SHOW_PROGRESS
 void ConsoleThread(uint32_t& StringCounter, uint32_t& StringAmount);
 #endif // SHOW_PROGRESS
+void FileThread(uint32_t& StringCounter, uint32_t& StringAmount);
 
 void __fastcall IDcallback(char** ID, uint8_t& pos);
 void __fastcall DLCcallback(char** DLC, uint8_t& pos);
@@ -42,7 +45,9 @@ static logFormat Format;
 static std::ifstream Log;
 static FILE* Output;
 
-static std::list<std::pair<uint32_t, float>> CANrawDataVec;
+std::mutex CANdataMutex;
+std::condition_variable BufferFull;
+static std::list<std::map<char*, float>> CANrawDataList;
 static uint32_t currentID;
 uint8_t currentDLC;
 
@@ -84,9 +89,12 @@ int main(int argc, char* argv[])
     {
         for (auto vec : *SPNs[spn.first])
         {
+            fprintf(Output, "%s\t", vec.Name);
             CalculatedData.insert({ vec.Name, 0 });
         }
     }
+    fprintf(Output, "\n");
+
     StringElementCallback* Callbacks = new StringElementCallback[0xFF]{nullptr};
     Callbacks[Format.ID] = IDcallback;
     Callbacks[Format.DLC] = DLCcallback;
@@ -106,11 +114,12 @@ int main(int argc, char* argv[])
 #ifdef SHOW_PROGRESS
     std::thread ConsoleProgressThread(ConsoleThread, std::ref(StringCounter), std::ref(StringAmount));
 #endif // SHOW_PROGRESS
+    std::thread FileWriteThread(FileThread, std::ref(StringCounter), std::ref(StringAmount));
 
     Log.clear(); 
     Log.seekg(std::ios_base::_Seekbeg);
 
-    clock_t start, stop;
+    clock_t start, stop; 
     start = clock();
 
     while (Log.getline(bufferBeginning, 0xFF, '\n'))
@@ -137,6 +146,10 @@ int main(int argc, char* argv[])
 #ifdef SHOW_PROGRESS
     ConsoleProgressThread.join();
 #endif // SHOW_PROGRESS
+    BufferFull.notify_all();
+    std::unique_lock<std::mutex> CANlock(CANdataMutex);
+    BufferFull.wait(CANlock, [] { return CANrawDataList.size() == 0; });
+    FileWriteThread.join();
     fclose(Output);
 
     stop = clock();
@@ -217,11 +230,28 @@ void __fastcall DataCallback(char** Data, uint8_t& pos)
 
     for (auto spn : *SPNs[currentID])
         CalculatedData[spn.Name] = getValue(spn, strtoll(SymbArray, nullptr, 16));
-
+    
     if (currentID == LeadingID)
     {
-        for (auto val : CalculatedData)
-            fprintf(Output, "%.3f\t", val.second);
-        fprintf(Output, "\n");
+        CANrawDataList.push_back(CalculatedData);
+    }
+    if (!(StringCounter % 150000))
+        BufferFull.notify_all();
+}
+
+uint32_t WrittenData;
+void FileThread(uint32_t& StringCounter, uint32_t& StringAmount)
+{
+    while (StringCounter - 1 != StringAmount)
+    {
+        std::unique_lock<std::mutex> CANlock(CANdataMutex);
+        BufferFull.wait(CANlock, [] { return CANrawDataList.size() != 0; });
+        for (auto map : CANrawDataList)
+        {
+            for(auto e : map)
+                fprintf(Output, "%.3f\t", e.second);
+            fprintf(Output, "\n");
+        }
+        CANrawDataList.clear();
     }
 }
