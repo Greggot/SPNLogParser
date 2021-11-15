@@ -1,8 +1,6 @@
 #pragma once
 #include <stdint.h>
 
-#define LITTLE_ENDIAN
-
 typedef struct 
 {
     char* Name;

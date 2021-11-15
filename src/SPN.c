@@ -4,12 +4,7 @@
 
 float getValue(SPN spn, uint64_t rawData)
 {
-    #ifdef LITTLE_ENDIAN
-        float Data = (rawData << (64 - spn.Position - spn.Length)) >> (64 - spn.Length);
-    #else
-        float Data = (float)((rawData << spn.Position) >> (64 - spn.Length));
-    #endif
-
+    float Data = (rawData << spn.Position) >> (64 - spn.Length);
     for(uint8_t i = 0; i < spn.OperationsSize; i++)
     {
         switch((*(uint32_t*)spn.Operations + i) & 0b11)
