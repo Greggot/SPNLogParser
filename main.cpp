@@ -229,7 +229,7 @@ void __fastcall DataCallback(char** Data, uint8_t& pos)
     }
 
     for (auto spn : *SPNs[currentID])
-        CalculatedData[spn.Name] = getValue(spn, strtoll(SymbArray, nullptr, 16));
+        CalculatedData[spn.Name] = getValue(spn, strtoull(SymbArray, nullptr, 16));
     
     if (currentID == LeadingID)
     {
